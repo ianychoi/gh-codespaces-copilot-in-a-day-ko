@@ -22,11 +22,26 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import roadshow.demo.api.HttpUtils;
+import roadshow.demo.api.db.JDBCLogDataRepository;
 import roadshow.demo.api.model.MessageRequest;
 import roadshow.demo.api.model.MessageResponse;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.ExampleObject;
 import io.swagger.v3.oas.annotations.media.Schema;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.RequestAttributes;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+import org.springframework.beans.factory.annotation.Autowired;
+
+import roadshow.demo.api.HttpUtils;
+import roadshow.demo.api.db.JDBCLogDataRepository;
+import roadshow.demo.api.db.MessageLogData;
 
 @Tag(name = "Messages", description = "질문 제출 및 답변 호출")
 @RestController
@@ -48,6 +63,11 @@ public class MessageController {
     private static final String ALLOWED_ORIGINS = "${CORS_ORIGIN}";
 
     private static final String errorJson = "{\n    \"reply\": \"죄송해요, 지금은 답을 드릴 수 없어요. 서버에 문제가 있는 것 같아요. 다시 시도해주세요. 😥\"  \n}";
+
+    private final Logger logger = LoggerFactory.getLogger(this.getClass());
+
+    @Autowired
+    private JDBCLogDataRepository jdbcLogDataRepository;
 
     //OpenAPI Configuration
     @Operation(
@@ -90,16 +110,23 @@ public class MessageController {
     )
 
     // ⬇️⬇️⬇️ Uncomment the line below to enable CORS ⬇️⬇️⬇️
-    // @CrossOrigin(origins = ALLOWED_ORIGINS)
+    @CrossOrigin(origins = ALLOWED_ORIGINS)
     // ⬆️⬆️⬆️ Uncomment the line above to enable CORS ⬆️⬆️⬆️
     @PostMapping
     public MessageResponse sendMessage(@RequestBody MessageRequest request) throws JsonMappingException, JsonProcessingException {
         // System.out.println("aoaiEndpoint: " + aoaiEndpoint);
         // System.out.println("aoaiApiKey: " + aoaiApiKey);
-
+        
         String requestUrl = aoaiEndpoint + "openai/deployments/" + aoaiDeploymentId + "/chat/completions?api-version=" + aoaiApiVersion;
-
         String inputMsg = request.getText();
+
+        // DB 저장
+        MessageLogData messageLogData = new MessageLogData();
+        messageLogData.setIpAddress(HttpUtils.getRemoteIP(RequestContextHolder.currentRequestAttributes()));
+        messageLogData.setRequestMessage(inputMsg);
+        jdbcLogDataRepository.save(messageLogData);
+        logger.info("[MessageLogData] saved to the DB: " + messageLogData.toString());
+
         String preMsg = "{\"role\": \"system\", \"content\": \"너는 Azure 전문가 Azure Bot이야. 한국어로 대답해줘. 그리고 전체 답변이 300 토큰을 넘지 않도록 잘 요약해줘.\"},";
         
         HttpHeaders headers = new HttpHeaders();
@@ -108,6 +135,7 @@ public class MessageController {
         headers.set("api-key", aoaiApiKey);
         
         String body = "{\"messages\": [" + preMsg + "{\"role\": \"user\", \"content\": \"" + inputMsg + "\"}], \"max_tokens\": 300}";
+        logger.info("[테스트]" + body);
         HttpEntity<String> entity = new HttpEntity<String>(body, headers);
         
         
@@ -124,6 +152,7 @@ public class MessageController {
             JsonNode rootNode = objectMapper.readTree(jsonResponse);
             reply = rootNode.get("choices").get(0).get("message").get("content").asText();
 
+            
         } catch(Exception e) {
             System.out.println("Exception: " + e);
             reply = "죄송해요, 지금은 답을 드릴 수 없어요. 서버에 문제가 있는 것 같아요. 다시 시도해주세요. 😥";
@@ -131,6 +160,7 @@ public class MessageController {
         
         MessageResponse messageResponse = new MessageResponse();
         messageResponse.setReply(reply);
+
         return messageResponse;
 
     }
